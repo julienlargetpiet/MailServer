@@ -25,6 +25,183 @@ func New(root, hostname string) *Store {
 	}
 }
 
+func imapFlagToMaildir(flag string) string {
+
+	switch flag {
+	case "\\Seen":
+		return "S"
+	case "\\Answered":
+		return "R"
+	case "\\Flagged":
+		return "F"
+	case "\\Deleted":
+		return "T"
+	case "\\Draft":
+		return "D"
+	}
+
+	return ""
+}
+
+func union(a, b []string) []string {
+
+	m := make(map[string]bool)
+
+	for _, v := range a {
+		m[v] = true
+	}
+
+	for _, v := range b {
+		m[v] = true
+	}
+
+	var out []string
+
+	for k := range m {
+		out = append(out, k)
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
+func subtract(a, b []string) []string {
+
+	m := make(map[string]bool)
+
+	for _, v := range b {
+		m[v] = true
+	}
+
+	var out []string
+
+	for _, v := range a {
+
+		if !m[v] {
+			out = append(out, v)
+		}
+	}
+
+	sort.Strings(out)
+
+	return out
+}
+
+func (s *Store) UpdateFlags(user, mailbox string, uid uint64, op storage.FlagOp, flags []string) error {
+
+	msgs, err := s.ListMessages(user, mailbox)
+	if err != nil {
+		return err
+	}
+
+	var meta *storage.MessageMeta
+
+	for i := range msgs {
+
+		if msgs[i].UID == uid {
+			meta = &msgs[i]
+			break
+		}
+	}
+
+	if meta == nil {
+		return fmt.Errorf("message not found")
+	}
+
+	// current Maildir flags (letters)
+	var current []string
+
+	for _, f := range meta.Flags {
+
+		m := imapFlagToMaildir(f)
+
+		if m != "" {
+			current = append(current, m)
+		}
+	}
+
+	// requested flags
+	var requested []string
+
+	for _, f := range flags {
+
+		m := imapFlagToMaildir(f)
+
+		if m != "" {
+			requested = append(requested, m)
+		}
+	}
+
+	switch op {
+
+	case storage.FlagSet:
+
+		current = requested
+
+	case storage.FlagAdd:
+
+		current = union(current, requested)
+
+	case storage.FlagRemove:
+
+		current = subtract(current, requested)
+	}
+
+	sort.Strings(current)
+
+	dir := filepath.Dir(meta.Path)
+	name := filepath.Base(meta.Path)
+
+	idx := strings.Index(name, ":2,")
+
+	var base string
+
+	if idx == -1 {
+		base = name
+	} else {
+		base = name[:idx]
+	}
+
+	flagStr := strings.Join(current, "")
+
+	newName := base + ":2," + flagStr
+
+	newPath := filepath.Join(dir, newName)
+
+	return os.Rename(meta.Path, newPath)
+}
+
+func parseMaildirFlags(name string) []string {
+
+	idx := strings.Index(name, ":2,")
+	if idx == -1 {
+		return nil
+	}
+
+	flagPart := name[idx+3:]
+
+	var flags []string
+
+	for _, c := range flagPart {
+
+		switch c {
+		case 'S':
+			flags = append(flags, "\\Seen")
+		case 'R':
+			flags = append(flags, "\\Answered")
+		case 'F':
+			flags = append(flags, "\\Flagged")
+		case 'T':
+			flags = append(flags, "\\Deleted")
+		case 'D':
+			flags = append(flags, "\\Draft")
+		}
+	}
+
+	return flags
+}
+
 func (s *Store) userMaildir(user string) string {
 	return filepath.Join(s.root, user, "Maildir")
 }
@@ -125,6 +302,7 @@ func (s *Store) ListMessages(user, mailbox string) ([]storage.MessageMeta, error
 			Seq:  uint32(i + 1),
 			UID:  uid,
 			Path: path,
+            Flags: parseMaildirFlags(name),
 		})
 	}
 

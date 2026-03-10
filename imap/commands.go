@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strings"
     "strconv"
+    "sort"
 
     "mailserver/storage"
+    "mailserver/mail"
 )
 
 type fetchMode int
@@ -14,6 +16,95 @@ const (
 	fetchBySeq fetchMode = iota
 	fetchByUID
 )
+
+type fetchItem struct {
+	flags bool
+	body  bool
+	uid   bool
+	size  bool
+}
+
+func parseStoreArgs(args string) (string, 
+                                  storage.FlagOp, 
+                                  bool,
+                                  []string, 
+                                  error) {
+
+	parts := strings.SplitN(args, " ", 3)
+	if len(parts) < 3 {
+		return "", storage.FlagSet, false, nil, fmt.Errorf("invalid STORE syntax")
+	}
+
+	seqset := parts[0]
+
+	opStr := strings.ToUpper(parts[1])
+	silent := strings.Contains(opStr, ".SILENT")
+    if silent {
+        opStr = strings.TrimSuffix(opStr, ".SILENT")
+    }
+
+	var op storage.FlagOp
+
+	switch opStr {
+
+	case "+FLAGS":
+		op = storage.FlagAdd
+
+	case "-FLAGS":
+		op = storage.FlagRemove
+
+	case "FLAGS":
+		op = storage.FlagSet
+
+	default:
+		return "", storage.FlagSet, false, nil, fmt.Errorf("invalid STORE operation")
+	}
+
+	flagPart := strings.TrimSpace(parts[2])
+	flagPart = strings.Trim(flagPart, "()")
+
+	flags := strings.Fields(flagPart)
+
+	return seqset, op, silent, flags, nil
+}
+
+func parseFetchItems(s string) fetchItem {
+
+	s = strings.ToUpper(strings.Trim(s, "()"))
+
+	parts := strings.Fields(s)
+
+	var fi fetchItem
+
+	for _, p := range parts {
+
+		switch p {
+
+		case "FLAGS":
+			fi.flags = true
+
+		case "BODY[]":
+			fi.body = true
+
+		case "UID":
+			fi.uid = true
+
+		case "RFC822.SIZE":
+			fi.size = true
+		}
+	}
+
+	return fi
+}
+
+func formatFlags(flags []string) string {
+
+	if len(flags) == 0 {
+		return "()"
+	}
+
+	return "(" + strings.Join(flags, " ") + ")"
+}
 
 func parseSequenceSet(seq string, max int) ([]int, error) {
 
@@ -84,12 +175,14 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
 		return
 	}
 
-	if strings.ToUpper(item) != "BODY[]" {
-		s.writeLine(tag + " BAD unsupported data item")
-		return
-	}
+    items := parseFetchItems(item)
+    
+    if !items.body && !items.flags && !items.uid && !items.size {
+    	s.writeLine(tag + " BAD unsupported data item")
+    	return
+    }
 
-	msgs, err := s.store.ListMessages(s.user, s.mailbox)
+    msgs, err := s.store.ListMessages(s.user, s.mailbox)
 	if err != nil {
 		s.writeLine(tag + " NO internal error")
 		return
@@ -115,6 +208,8 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
 		seqs = findUIDs(seqset, msgs)
 	}
 
+    // no ERROR even if seq is empty
+
 	for _, n := range seqs {
 
 		if n <= 0 || n > len(msgs) {
@@ -123,49 +218,153 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
 
 		meta := msgs[n-1]
 
-		msg, err := s.store.GetMessage(s.user, s.mailbox, meta.UID)
-		if err != nil {
-			continue
-		}
+        var msg *mail.Message
+        
+        if items.body || items.size {
+        
+        	msg, err = s.store.GetMessage(s.user, s.mailbox, meta.UID)
+        	if err != nil {
+        		continue
+        	}
+        }
 
-		size := len(msg.Raw)
+        var attrs []string
+        
+        if items.flags {
+        	attrs = append(attrs, "FLAGS " + formatFlags(meta.Flags))
+        }
+        
+        if items.uid {
+        	attrs = append(attrs, fmt.Sprintf("UID %d", meta.UID))
+        }
+        
+        if items.size && msg != nil {
+        	attrs = append(attrs, fmt.Sprintf("RFC822.SIZE %d", len(msg.Raw)))
+        }
 
-		s.writeLine(fmt.Sprintf("* %d FETCH (BODY[] {%d}", n, size))
+        prefix := fmt.Sprintf("* %d FETCH (", n)
+        
+        if len(attrs) > 0 {
+        	prefix += strings.Join(attrs, " ") + " "
+        }
+        
+        if items.body && msg != nil {
+        
+        	size := len(msg.Raw)
+        
+        	s.writeLine(fmt.Sprintf("%sBODY[] {%d}", prefix, size))
+        
+        	s.writer.Write(msg.Raw)
+        	s.writer.Write([]byte("\r\n"))
+        	s.writer.Flush()
+        
+        	s.writeLine(")")
+        
+        } else {
+        
+        	s.writeLine(strings.TrimRight(prefix, " ") + ")")
+        }
 
-		s.writer.Write(msg.Raw)
-		s.writer.Write([]byte("\r\n"))
-		s.writer.Flush()
-
-		s.writeLine(")")
 	}
 
 	s.writeLine(tag + " OK FETCH completed")
 }
 
-// just creates the set of mails with the requested uuids
-func findUIDs(set string, msgs []storage.MessageMeta) []int { 
+func findUIDs(set string, msgs []storage.MessageMeta) []int {
 
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	var maxUID uint64
+	for _, m := range msgs {
+		if m.UID > maxUID {
+			maxUID = m.UID
+		}
+	}
+
+	seen := make(map[int]bool)
 	var result []int
 
 	parts := strings.Split(set, ",")
 
 	for _, part := range parts {
 
-		uid, err := strconv.ParseUint(part, 10, 64)
-		if err != nil {
+		part = strings.TrimSpace(part)
+		if part == "" {
 			continue
 		}
 
-		for i, m := range msgs {
+		if strings.Contains(part, ":") {
 
-			if m.UID == uid {
-				result = append(result, i+1)
-				break
+			r := strings.SplitN(part, ":", 2)
+			if len(r) != 2 {
+				continue
+			}
+
+			start, ok := parseUIDToken(r[0], maxUID)
+			if !ok {
+				continue
+			}
+
+			end, ok := parseUIDToken(r[1], maxUID)
+			if !ok {
+				continue
+			}
+
+			if start > end {
+				start, end = end, start
+			}
+
+			for i, m := range msgs {
+				if m.UID >= start && m.UID <= end {
+					seq := i + 1
+					if !seen[seq] {
+						seen[seq] = true
+						result = append(result, seq)
+					}
+				}
+			}
+
+		} else {
+
+			uid, ok := parseUIDToken(part, maxUID)
+			if !ok {
+				continue
+			}
+
+			for i, m := range msgs {
+				if m.UID == uid {
+					seq := i + 1
+					if !seen[seq] {
+						seen[seq] = true
+						result = append(result, seq)
+					}
+					break
+				}
 			}
 		}
 	}
 
+	sort.Ints(result)
+
 	return result
+}
+
+func parseUIDToken(s string, maxUID uint64) (uint64, bool) {
+
+	s = strings.TrimSpace(s)
+
+	if s == "*" {
+		return maxUID, true
+	}
+
+	uid, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || uid == 0 {
+		return 0, false
+	}
+
+	return uid, true
 }
 
 func (s *Session) handleLogin(tag, args string) {
@@ -265,6 +464,82 @@ func (s *Session) handleList(tag, args string) {
 	}
 
 	s.writeLine(tag + " OK LIST completed")
+}
+
+func (s *Session) handleCapability(tag string) {
+
+	s.writeLine("* CAPABILITY IMAP4rev1")
+	s.writeLine(tag + " OK CAPABILITY completed")
+}
+
+func (s *Session) handleNoop(tag string) {
+
+	s.writeLine(tag + " OK NOOP completed")
+}
+
+// Example: A1 STORE 1:4 +FLAGS (\Seen \Flagged)
+func (s *Session) handleStore(tag, args string) {
+
+	if s.state != StateSelected {
+		s.writeLine(tag + " NO mailbox not selected")
+		return
+	}
+
+	seqset, op, silent, flags, err := parseStoreArgs(args)
+	if err != nil {
+		s.writeLine(tag + " BAD STORE syntax")
+		return
+	}
+
+	msgs, err := s.store.ListMessages(s.user, s.mailbox)
+	if err != nil {
+		s.writeLine(tag + " NO internal error")
+		return
+	}
+
+	seqs, err := parseSequenceSet(seqset, len(msgs))
+	if err != nil {
+		s.writeLine(tag + " BAD invalid sequence set")
+		return
+	}
+
+	for _, n := range seqs {
+
+		if n <= 0 || n > len(msgs) {
+			continue
+		}
+
+		meta := msgs[n-1]
+
+		err := s.store.UpdateFlags(
+			s.user,
+			s.mailbox,
+			meta.UID,
+			op,
+			flags,
+		)
+		if err != nil {
+			continue
+		}
+
+		if !silent { // RFC 3501 when STORE not .SILENT we must send an untagged FETCH response
+
+			updatedMsgs, err := s.store.ListMessages(s.user, s.mailbox)
+			if err != nil {
+				continue
+			}
+
+			if n <= 0 || n > len(updatedMsgs) {
+				continue
+			}
+
+			updatedMeta := updatedMsgs[n-1]
+
+			s.writeLine(fmt.Sprintf("* %d FETCH (FLAGS %s)", n, formatFlags(updatedMeta.Flags)))
+		}
+	}
+
+	s.writeLine(tag + " OK STORE completed")
 }
 
 

@@ -70,11 +70,20 @@ func (s *Session) Serve() {
 		case "FETCH":
 			s.handleFetch(tag, args)
 
+		case "STORE":
+			s.handleStore(tag, args)
+
 		case "UID":
 			s.handleUID(tag, args)
 
         case "LIST":
 			s.handleList(tag, args)
+
+        case "CAPABILITY":
+			s.handleCapability(tag)
+
+        case "NOOP":
+			s.handleNoop(tag)
 
 		case "LOGOUT":
 			s.writeLine("* BYE")
