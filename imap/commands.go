@@ -5,6 +5,7 @@ import (
 	"strings"
     "strconv"
     "sort"
+    "os"
 
     "mailserver/storage"
     "mailserver/mail"
@@ -22,6 +23,15 @@ type fetchItem struct {
 	body  bool
 	uid   bool
 	size  bool
+}
+
+func hasFlag(flags []string, flag string) bool {
+	for _, f := range flags {
+		if f == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func parseStoreArgs(args string) (string, 
@@ -410,29 +420,20 @@ func (s *Session) handleSelect(tag, mailbox string) {
 // A1 UID FETCH <uid-set> <data-item>
 // Example A3 UID FETCH 34434354545...2323  BODY[]
 
-func (s *Session) handleUID(tag, args string) {
+func (s *Session) handleUIDFetch(tag, args string) {
+
+	args = strings.TrimSpace(args)
 
 	parts := strings.SplitN(args, " ", 2)
 	if len(parts) < 2 {
-		s.writeLine(tag + " BAD invalid UID command")
-		return
-	}
-
-	cmd := strings.ToUpper(parts[0])
-	rest := parts[1]
-
-	if cmd != "FETCH" {
-		s.writeLine(tag + " BAD unsupported UID command")
-		return
-	}
-
-	p := strings.SplitN(rest, " ", 2)
-	if len(p) < 2 {
 		s.writeLine(tag + " BAD invalid UID FETCH syntax")
 		return
 	}
 
-	s.fetchMessages(tag, p[0], p[1], fetchByUID)
+	uidset := parts[0]
+	items := parts[1]
+
+	s.fetchMessages(tag, uidset, items, fetchByUID)
 }
 
 func (s *Session) handleFetch(tag, args string) {
@@ -541,5 +542,197 @@ func (s *Session) handleStore(tag, args string) {
 
 	s.writeLine(tag + " OK STORE completed")
 }
+
+func (s *Session) handleUIDDispatcher(tag, args string) {
+
+    parts := strings.SplitN(args, " ", 2)
+    if len(parts) < 2 {
+        s.writeLine(tag + " BAD invalid UID command")
+        return
+    }
+
+    subcmd := strings.ToUpper(parts[0])
+    rest := parts[1]
+
+    switch subcmd {
+
+    case "FETCH":
+        s.handleUIDFetch(tag, rest)
+
+    case "STORE":
+        s.handleUIDStore(tag, rest)
+
+    default:
+        s.writeLine(tag + " BAD unsupported UID command")
+    }
+}
+
+func (s *Session) handleUIDStore(tag, args string) {
+
+    if s.state != StateSelected {
+        s.writeLine(tag + " NO mailbox not selected")
+        return
+    }
+
+    uidset, op, silent, flags, err := parseStoreArgs(args)
+    if err != nil {
+        s.writeLine(tag + " BAD STORE syntax")
+        return
+    }
+
+    msgs, err := s.store.ListMessages(s.user, s.mailbox)
+    if err != nil {
+        s.writeLine(tag + " NO internal error")
+        return
+    }
+
+    seqs := findUIDs(uidset, msgs)
+
+    for _, n := range seqs {
+
+        if n <= 0 || n > len(msgs) {
+            continue
+        }
+
+        meta := msgs[n-1]
+
+        err := s.store.UpdateFlags(
+            s.user,
+            s.mailbox,
+            meta.UID,
+            op,
+            flags,
+        )
+        if err != nil {
+            continue
+        }
+
+        if !silent {
+
+            updatedMsgs, err := s.store.ListMessages(s.user, s.mailbox)
+            if err != nil {
+                continue
+            }
+
+            updatedMeta := updatedMsgs[n-1]
+
+            s.writeLine(fmt.Sprintf(
+                "* %d FETCH (FLAGS %s UID %d)",
+                n,
+                formatFlags(updatedMeta.Flags),
+                updatedMeta.UID,
+            ))
+        }
+    }
+
+    s.writeLine(tag + " OK STORE completed")
+}
+
+func (s *Session) handleExpunge(tag string) {
+
+    if s.state != StateSelected {
+        s.writeLine(tag + " NO mailbox not selected")
+        return
+    }
+
+    msgs, err := s.store.ListMessages(s.user, s.mailbox)
+    if err != nil {
+        s.writeLine(tag + " NO internal error")
+        return
+    }
+
+    for i := len(msgs) - 1; i >= 0; i-- {
+
+        meta := msgs[i]
+
+        if hasFlag(meta.Flags, "\\Deleted") {
+
+            os.Remove(meta.Path)
+
+            s.writeLine(fmt.Sprintf("* %d EXPUNGE", meta.Seq))
+        }
+    }
+
+    s.writeLine(tag + " OK EXPUNGE completed")
+}
+
+// Example: A1 STATUS INBOX (MESSAGES UNSEEN UIDNEXT UIDVALIDITY)
+func (s *Session) handleStatus(tag, args string) {
+
+	parts := strings.SplitN(args, " ", 2)
+	if len(parts) < 2 {
+		s.writeLine(tag + " BAD invalid STATUS syntax")
+		return
+	}
+
+	mailbox := parts[0]
+	attrs := strings.Fields(strings.Trim(parts[1], "()"))
+
+	msgs, err := s.store.ListMessages(s.user, mailbox)
+	if err != nil {
+		s.writeLine(tag + " NO mailbox not found")
+		return
+	}
+
+	total := len(msgs)
+
+    recent, err := s.store.CountRecent(s.user, mailbox)
+    if err != nil {
+    	recent = 0
+    }
+
+	unseen := 0
+	var maxUID uint64
+
+	for _, m := range msgs {
+
+		if !hasFlag(m.Flags, "\\Seen") {
+			unseen++
+		}
+
+		if m.UID > maxUID {
+			maxUID = m.UID
+		}
+	}
+
+	uidNext := maxUID + 1
+
+	var fields []string
+
+	for _, attr := range attrs {
+
+		switch strings.ToUpper(attr) {
+
+		case "MESSAGES":
+			fields = append(fields, fmt.Sprintf("MESSAGES %d", total))
+
+		case "UNSEEN":
+			fields = append(fields, fmt.Sprintf("UNSEEN %d", unseen))
+
+		case "UIDNEXT":
+			fields = append(fields, fmt.Sprintf("UIDNEXT %d", uidNext))
+
+		case "UIDVALIDITY":
+			fields = append(fields, "UIDVALIDITY 1")
+
+		case "RECENT":
+			fields = append(fields, fmt.Sprintf("RECENT %d", recent))
+
+		default:
+			s.writeLine(tag + " BAD unknown STATUS attribute")
+			return
+		}
+	}
+
+	s.writeLine(fmt.Sprintf(
+		"* STATUS %s (%s)",
+		mailbox,
+		strings.Join(fields, " "),
+	))
+
+	s.writeLine(tag + " OK STATUS completed")
+}
+
+
 
 

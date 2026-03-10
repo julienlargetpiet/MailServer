@@ -378,5 +378,25 @@ func (s *Store) UserExist(user string) (bool, error) {
     return false, err
 }
 
+func (s *Store) CountRecent(user, mailbox string) (int, error) {
+
+	maildir := s.mailboxPath(user, mailbox)
+	newDir := filepath.Join(maildir, "new")
+
+	files, err := os.ReadDir(newDir)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+
+	for _, f := range files {
+		if !f.IsDir() {
+			count++
+		}
+	}
+
+	return count, nil
+}
 
 

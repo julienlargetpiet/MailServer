@@ -74,10 +74,16 @@ func (s *Session) Serve() {
 			s.handleStore(tag, args)
 
 		case "UID":
-			s.handleUID(tag, args)
+			s.handleUIDDispatcher(tag, args)
+
+		case "EXPUNGE":
+			s.handleExpunge(tag)
 
         case "LIST":
 			s.handleList(tag, args)
+
+		case "STATUS":
+			s.handleStatus(tag, args)
 
         case "CAPABILITY":
 			s.handleCapability(tag)

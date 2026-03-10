@@ -30,6 +30,9 @@ type Store interface {
 
 	UpdateFlags(user, mailbox string, uid uint64, op FlagOp, flags []string) error
 
+    CountRecent(user, mailbox string) (int, error)
+
 }
+
 
 
