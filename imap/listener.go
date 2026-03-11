@@ -27,6 +27,8 @@ func (l *Listener) ListenAndServe() error {
 	}
     defer ln.Close()
 
+    hub := NewMailboxHub()
+
 	log.Printf("IMAP listening on %s", l.addr)
 
 	for {
@@ -40,7 +42,7 @@ func (l *Listener) ListenAndServe() error {
         log.Printf("IMAP connection from %s", conn.RemoteAddr())
 
 		go func() {
-			session := NewSession(conn, l.store)
+			session := NewSession(conn, l.store, hub)
 			session.Serve()
 		}()
 	}

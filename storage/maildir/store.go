@@ -399,4 +399,33 @@ func (s *Store) CountRecent(user, mailbox string) (int, error) {
 	return count, nil
 }
 
+func (s *Store) ClearRecent(user, mailbox string) error {
+
+	maildir := s.mailboxPath(user, mailbox)
+
+	newDir := filepath.Join(maildir, "new")
+	curDir := filepath.Join(maildir, "cur")
+
+	files, err := os.ReadDir(newDir)
+	if err != nil {
+		return err
+	}
+
+	for _, f := range files {
+
+		if f.IsDir() {
+			continue
+		}
+
+		oldPath := filepath.Join(newDir, f.Name())
+		newPath := filepath.Join(curDir, f.Name())
+
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
 

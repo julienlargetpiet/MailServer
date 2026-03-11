@@ -32,6 +32,8 @@ type Store interface {
 
     CountRecent(user, mailbox string) (int, error)
 
+    ClearRecent(user, mailbox string) error
+
 }
 
 

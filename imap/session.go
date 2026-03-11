@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+    "sync"
 
 	"mailserver/storage"
 )
@@ -23,18 +24,24 @@ type Session struct {
 	writer *bufio.Writer
 
 	store storage.Store
+	hub   *MailboxHub
 
 	state   SessionState
 	user    string
 	mailbox string
+
+    mu sync.Mutex
+
 }
 
-func NewSession(conn net.Conn, store storage.Store) *Session {
+// no mu fields, so it will be automatically initialized to its default value, which is a valid mutex
+func NewSession(conn net.Conn, store storage.Store, hub *MailboxHub) *Session {
 	return &Session{
 		conn:   conn,
 		reader: bufio.NewReader(conn),
 		writer: bufio.NewWriter(conn),
 		store:  store,
+		hub:    hub,
 		state:  StateNotAuthenticated,
 	}
 }
@@ -92,6 +99,11 @@ func (s *Session) Serve() {
 			s.handleNoop(tag)
 
 		case "LOGOUT":
+
+            if s.mailbox != "" {
+            	s.hub.Unregister(s.mailbox, s)
+            }
+
 			s.writeLine("* BYE")
 			s.writeLine(tag + " OK LOGOUT completed")
 			return
@@ -103,6 +115,8 @@ func (s *Session) Serve() {
 }
 
 func (s *Session) writeLine(line string) {
+    s.mu.Lock()
+    defer s.mu.Unlock()
 	fmt.Fprintf(s.writer, "%s\r\n", line) // write to the buffer of bufio.Writer
 	s.writer.Flush() // writes through the TCP connection
 }

@@ -6,6 +6,7 @@ import (
     "strconv"
     "sort"
     "os"
+    "time"
 
     "mailserver/storage"
     "mailserver/mail"
@@ -408,13 +409,66 @@ func (s *Session) handleSelect(tag, mailbox string) {
 		return
 	}
 
-	msgs, _ := s.store.ListMessages(s.user, mailbox)
+	msgs, err := s.store.ListMessages(s.user, mailbox)
+	if err != nil {
+		s.writeLine(tag + " NO mailbox not found")
+		return
+	}
 
-	s.mailbox = mailbox
-	s.state = StateSelected
+	recent, err := s.store.CountRecent(s.user, mailbox)
+	if err != nil {
+		recent = 0
+	}
 
+    _ = s.store.ClearRecent(s.user, mailbox)
+
+    firstUnseen := 0
+    
+    for _, m := range msgs {
+    	if !hasFlag(m.Flags, "\\Seen") {
+    		firstUnseen = int(m.Seq)
+    		break
+    	}
+    }
+
+	var maxUID uint64
+	for _, m := range msgs {
+		if m.UID > maxUID {
+			maxUID = m.UID
+		}
+	}
+
+	// just the predicted next uids, so even if that is not correct, stil RFC
+    uidNext := max(maxUID + 1, uint64(time.Now().UnixNano()))
+	uidValidity := 1
+
+    if s.mailbox != "" {
+    	s.hub.Unregister(s.mailbox, s)
+    }
+    
+    s.mailbox = mailbox
+    s.state = StateSelected
+    s.hub.Register(mailbox, s)
+
+	// FLAGS supported by the server
+	s.writeLine(`* FLAGS (\Seen \Answered \Flagged \Deleted \Draft)`)
+
+    // optional, tell the clients that flas can be stored
+    s.writeLine(`* OK [PERMANENTFLAGS (\Seen \Answered \Flagged \Deleted \Draft \*)]`)
+
+	// message counts
 	s.writeLine(fmt.Sprintf("* %d EXISTS", len(msgs)))
-	s.writeLine(tag + " OK SELECT completed")
+	s.writeLine(fmt.Sprintf("* %d RECENT", recent))
+
+    if firstUnseen > 0 {
+    	s.writeLine(fmt.Sprintf("* OK [UNSEEN %d] First unseen message", firstUnseen))
+    }
+
+	// UID metadata
+	s.writeLine(fmt.Sprintf("* OK [UIDVALIDITY %d] UIDs valid", uidValidity))
+	s.writeLine(fmt.Sprintf("* OK [UIDNEXT %d] Predicted next UID", uidNext))
+
+	s.writeLine(tag + " OK [READ-WRITE] SELECT completed")
 }
 
 // A1 UID FETCH <uid-set> <data-item>
@@ -536,35 +590,16 @@ func (s *Session) handleStore(tag, args string) {
 
 			updatedMeta := updatedMsgs[n-1]
 
-			s.writeLine(fmt.Sprintf("* %d FETCH (FLAGS %s)", n, formatFlags(updatedMeta.Flags)))
+            line := fmt.Sprintf("* %d FETCH (FLAGS %s)", n, formatFlags(updatedMeta.Flags))
+
+			s.writeLine(line)
+
+	        s.hub.BroadcastExcept(s.mailbox, s, line)
+
 		}
 	}
 
 	s.writeLine(tag + " OK STORE completed")
-}
-
-func (s *Session) handleUIDDispatcher(tag, args string) {
-
-    parts := strings.SplitN(args, " ", 2)
-    if len(parts) < 2 {
-        s.writeLine(tag + " BAD invalid UID command")
-        return
-    }
-
-    subcmd := strings.ToUpper(parts[0])
-    rest := parts[1]
-
-    switch subcmd {
-
-    case "FETCH":
-        s.handleUIDFetch(tag, rest)
-
-    case "STORE":
-        s.handleUIDStore(tag, rest)
-
-    default:
-        s.writeLine(tag + " BAD unsupported UID command")
-    }
 }
 
 func (s *Session) handleUIDStore(tag, args string) {
@@ -616,44 +651,83 @@ func (s *Session) handleUIDStore(tag, args string) {
 
             updatedMeta := updatedMsgs[n-1]
 
-            s.writeLine(fmt.Sprintf(
+            line := fmt.Sprintf(
                 "* %d FETCH (FLAGS %s UID %d)",
                 n,
                 formatFlags(updatedMeta.Flags),
                 updatedMeta.UID,
-            ))
+            )
+
+            s.writeLine(line)
+
+	        s.hub.BroadcastExcept(s.mailbox, s, line)
+
         }
     }
 
     s.writeLine(tag + " OK STORE completed")
 }
 
+func (s *Session) handleUIDDispatcher(tag, args string) {
+
+    parts := strings.SplitN(args, " ", 2)
+    if len(parts) < 2 {
+        s.writeLine(tag + " BAD invalid UID command")
+        return
+    }
+
+    subcmd := strings.ToUpper(parts[0])
+    rest := parts[1]
+
+    switch subcmd {
+
+    case "FETCH":
+        s.handleUIDFetch(tag, rest)
+
+    case "STORE":
+        s.handleUIDStore(tag, rest)
+
+    default:
+        s.writeLine(tag + " BAD unsupported UID command")
+    }
+}
+
 func (s *Session) handleExpunge(tag string) {
 
-    if s.state != StateSelected {
-        s.writeLine(tag + " NO mailbox not selected")
-        return
-    }
+	if s.state != StateSelected {
+		s.writeLine(tag + " NO mailbox not selected")
+		return
+	}
 
-    msgs, err := s.store.ListMessages(s.user, s.mailbox)
-    if err != nil {
-        s.writeLine(tag + " NO internal error")
-        return
-    }
+	msgs, err := s.store.ListMessages(s.user, s.mailbox)
+	if err != nil {
+		s.writeLine(tag + " NO internal error")
+		return
+	}
 
-    for i := len(msgs) - 1; i >= 0; i-- {
+	expunged := 0
 
-        meta := msgs[i]
+	for _, meta := range msgs {
 
-        if hasFlag(meta.Flags, "\\Deleted") {
+		if !hasFlag(meta.Flags, "\\Deleted") {
+			continue
+		}
 
-            os.Remove(meta.Path)
+		seq := int(meta.Seq) - expunged
 
-            s.writeLine(fmt.Sprintf("* %d EXPUNGE", meta.Seq))
-        }
-    }
+		if err := os.Remove(meta.Path); err != nil {
+			continue
+		}
 
-    s.writeLine(tag + " OK EXPUNGE completed")
+		line := fmt.Sprintf("* %d EXPUNGE", seq)
+
+		s.writeLine(line)
+		s.hub.BroadcastExcept(s.mailbox, s, line)
+
+		expunged++
+	}
+
+	s.writeLine(tag + " OK EXPUNGE completed")
 }
 
 // Example: A1 STATUS INBOX (MESSAGES UNSEEN UIDNEXT UIDVALIDITY)
