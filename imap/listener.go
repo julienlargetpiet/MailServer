@@ -10,12 +10,16 @@ import (
 type Listener struct {
 	addr  string
 	store storage.Store
+    hub   *MailboxHub
 }
 
-func New(addr string, store storage.Store) *Listener {
+func New(addr string, 
+         store storage.Store,
+         hub *MailboxHub) *Listener {
 	return &Listener{
 		addr:  addr,
 		store: store,
+        hub: hub,
 	}
 }
 
@@ -26,8 +30,6 @@ func (l *Listener) ListenAndServe() error {
 		return err
 	}
     defer ln.Close()
-
-    hub := NewMailboxHub()
 
 	log.Printf("IMAP listening on %s", l.addr)
 
@@ -42,7 +44,7 @@ func (l *Listener) ListenAndServe() error {
         log.Printf("IMAP connection from %s", conn.RemoteAddr())
 
 		go func() {
-			session := NewSession(conn, l.store, hub)
+			session := NewSession(conn, l.store, l.hub)
 			session.Serve()
 		}()
 	}

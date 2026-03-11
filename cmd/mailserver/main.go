@@ -16,7 +16,11 @@ func main() {
 
 	store := maildir.New(cfg.MailRoot, cfg.Hostname)
 
-	router := mailrouter.New(cfg.Domain, store)
+	// Global mailbox event hub (shared between SMTP and IMAP)
+	hub := imap.NewMailboxHub()
+
+	// Router now needs the hub so it can emit EXISTS events
+	router := mailrouter.New(cfg.Domain, store, hub)
 
 	smtpListener := ingress.NewListener(cfg.SMTP.ListenAddr, router)
 
@@ -26,7 +30,8 @@ func main() {
 		}
 	}()
 
-	imapServer := imap.New(cfg.IMAP.ListenAddr, store)
+	// IMAP listener also receives the hub
+	imapServer := imap.New(cfg.IMAP.ListenAddr, store, hub)
 
 	log.Fatal(imapServer.ListenAndServe())
 }

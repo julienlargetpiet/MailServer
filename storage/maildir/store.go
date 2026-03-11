@@ -221,6 +221,9 @@ func parseMaildirUID(name string) uint64 {
 	return uid
 }
 
+// "INBOX" -> data/username/Maildir
+// "Special" -> data/username/Maildir/.Special
+// that is in fact Maildir Format
 func (s *Store) mailboxPath(user, mailbox string) string {
 
 	base := s.userMaildir(user)
@@ -426,6 +429,21 @@ func (s *Store) ClearRecent(user, mailbox string) error {
 	}
 
 	return nil
+}
+
+// tells the client that UID are stable from teh last time they requested
+// UIDValidity, if UIDValidity value have changed, then UIDs client cache must be rebuilt
+func (s *Store) UIDValidity(user, mailbox string) (uint64, error) {
+
+    path := s.mailboxPath(user, mailbox)
+
+    info, err := os.Stat(path)
+    if err != nil {
+        return 0, err
+    }
+
+    // last modification time in secs
+    return uint64(info.ModTime().Unix()), nil
 }
 
 

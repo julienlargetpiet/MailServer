@@ -74,6 +74,9 @@ func (s *Session) Serve() {
 		case "SELECT":
 			s.handleSelect(tag, args)
 
+		case "SEARCH":
+			s.handleSearch(tag, args)
+
 		case "FETCH":
 			s.handleFetch(tag, args)
 
@@ -115,10 +118,14 @@ func (s *Session) Serve() {
 }
 
 func (s *Session) writeLine(line string) {
-    s.mu.Lock()
+    // here we lock the use of the method because it is writing 
+    // to a shared ressource which is the io buffer -> TCP socket...
+    s.mu.Lock() 
     defer s.mu.Unlock()
 	fmt.Fprintf(s.writer, "%s\r\n", line) // write to the buffer of bufio.Writer
 	s.writer.Flush() // writes through the TCP connection
 }
+
+
 
 

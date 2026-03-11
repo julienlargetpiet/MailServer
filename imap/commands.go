@@ -440,15 +440,21 @@ func (s *Session) handleSelect(tag, mailbox string) {
 
 	// just the predicted next uids, so even if that is not correct, stil RFC
     uidNext := max(maxUID + 1, uint64(time.Now().UnixNano()))
-	uidValidity := 1
+
+    uidValidity, err := s.store.UIDValidity(s.user, mailbox)
+    if err != nil {
+        uidValidity = 1
+    }
 
     if s.mailbox != "" {
-    	s.hub.Unregister(s.mailbox, s)
+        key := s.user + "/" + mailbox
+    	s.hub.Unregister(key, s)
     }
     
     s.mailbox = mailbox
     s.state = StateSelected
-    s.hub.Register(mailbox, s)
+    key := s.user + "/" + mailbox
+    s.hub.Register(key, s)
 
 	// FLAGS supported by the server
 	s.writeLine(`* FLAGS (\Seen \Answered \Flagged \Deleted \Draft)`)
@@ -687,6 +693,9 @@ func (s *Session) handleUIDDispatcher(tag, args string) {
     case "STORE":
         s.handleUIDStore(tag, rest)
 
+    case "SEARCH":
+        s.handleUIDSearch(tag, rest)
+
     default:
         s.writeLine(tag + " BAD unsupported UID command")
     }
@@ -748,6 +757,11 @@ func (s *Session) handleStatus(tag, args string) {
 		return
 	}
 
+    uidValidity, err := s.store.UIDValidity(s.user, mailbox)
+    if err != nil {
+        uidValidity = 1
+    }
+
 	total := len(msgs)
 
     recent, err := s.store.CountRecent(s.user, mailbox)
@@ -787,7 +801,7 @@ func (s *Session) handleStatus(tag, args string) {
 			fields = append(fields, fmt.Sprintf("UIDNEXT %d", uidNext))
 
 		case "UIDVALIDITY":
-			fields = append(fields, "UIDVALIDITY 1")
+            fields = append(fields, fmt.Sprintf("UIDVALIDITY %d", uidValidity))
 
 		case "RECENT":
 			fields = append(fields, fmt.Sprintf("RECENT %d", recent))
@@ -807,6 +821,180 @@ func (s *Session) handleStatus(tag, args string) {
 	s.writeLine(tag + " OK STATUS completed")
 }
 
+func (s *Session) handleSearch(tag, args string) {
+
+	if s.state != StateSelected {
+		s.writeLine(tag + " NO mailbox not selected")
+		return
+	}
+
+	tokens := strings.Fields(args)
+
+	msgs, err := s.store.ListMessages(s.user, s.mailbox)
+	if err != nil {
+		s.writeLine(tag + " NO internal error")
+		return
+	}
+
+	var result []string
+
+	for _, m := range msgs {
+
+		if s.matchSearch(tokens, m) {
+			result = append(result, strconv.Itoa(int(m.Seq)))
+		}
+	}
+
+	s.writeLine("* SEARCH " + strings.Join(result, " "))
+	s.writeLine(tag + " OK SEARCH completed")
+}
+
+func (s *Session) handleUIDSearch(tag, args string) {
+
+	if s.state != StateSelected {
+		s.writeLine(tag + " NO mailbox not selected")
+		return
+	}
+
+	tokens := strings.Fields(args)
+
+	msgs, err := s.store.ListMessages(s.user, s.mailbox)
+	if err != nil {
+		s.writeLine(tag + " NO internal error")
+		return
+	}
+
+	var result []string
+
+	for _, m := range msgs {
+
+		if s.matchSearch(tokens, m) {
+			result = append(result, strconv.FormatUint(m.UID, 10))
+		}
+	}
+
+	s.writeLine("* SEARCH " + strings.Join(result, " "))
+	s.writeLine(tag + " OK SEARCH completed")
+}
+
+func (s *Session) matchSearch(tokens []string, 
+                              msg storage.MessageMeta) bool {
+
+	for i := 0; i < len(tokens); i++ {
+
+		switch strings.ToUpper(tokens[i]) {
+
+		case "ALL":
+			continue
+
+		case "SEEN":
+			if !hasFlag(msg.Flags, "\\Seen") {
+				return false
+			}
+
+		case "UNSEEN":
+			if hasFlag(msg.Flags, "\\Seen") {
+				return false
+			}
+
+		case "DELETED":
+			if !hasFlag(msg.Flags, "\\Deleted") {
+				return false
+			}
+
+		case "FLAGGED":
+			if !hasFlag(msg.Flags, "\\Flagged") {
+				return false
+			}
+
+		case "SINCE":
+			i++
+			if i >= len(tokens) {
+				return false
+			}
+
+			date, err := time.Parse("2-Jan-2006", tokens[i])
+			if err != nil {
+				return false
+			}
+
+			msgTime := time.Unix(0, int64(msg.UID))
+
+			if msgTime.Before(date) {
+				return false
+			}
+
+		case "BEFORE":
+			i++
+			if i >= len(tokens) {
+				return false
+			}
+
+			date, err := time.Parse("2-Jan-2006", tokens[i])
+			if err != nil {
+				return false
+			}
+
+			msgTime := time.Unix(0, int64(msg.UID))
+
+			if !msgTime.Before(date) {
+				return false
+			}
+
+        case "FROM":
+            i++
+        
+            if i >= len(tokens) {
+                return false
+            }
+
+            msg, err := s.store.GetMessage(s.user, s.mailbox, msg.UID)
+            if err != nil {
+                return false
+            }
+        
+            from := strings.ToLower(msg.Header("From"))
+            query := strings.ToLower(tokens[i])
+        
+            if !strings.Contains(from, query) {
+                return false
+            }
+
+        case "TO":
+            i++
+        
+            msg, err := s.store.GetMessage(s.user, s.mailbox, msg.UID)
+            if err != nil {
+                return false
+            }
+        
+            to := strings.ToLower(msg.Header("To"))
+        
+            if !strings.Contains(to, strings.ToLower(tokens[i])) {
+                return false
+            }
+
+        case "SUBJECT":
+            i++
+        
+            msg, err := s.store.GetMessage(s.user, s.mailbox, msg.UID)
+            if err != nil {
+                return false
+            }
+        
+            subject := strings.ToLower(msg.Header("Subject"))
+        
+            if !strings.Contains(subject, strings.ToLower(tokens[i])) {
+                return false
+            }
+
+		default:
+			return false
+		}
+	}
+
+	return true
+}
 
 
 

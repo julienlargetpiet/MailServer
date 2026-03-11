@@ -34,6 +34,8 @@ type Store interface {
 
     ClearRecent(user, mailbox string) error
 
+    UIDValidity(user, mailbox string) (uint64, error)
+
 }
 
 
