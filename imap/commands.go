@@ -932,7 +932,9 @@ func (s *Session) handleUIDSearch(tag, args string) {
 
 	for _, m := range msgs {
 
-		if s.matchSearch(tokens, uidSet, m) {
+        i := 0
+
+		if s.matchSearch(tokens, &i, uidSet, m) {
 			result = append(result, strconv.FormatUint(m.UID, 10))
 		}
 	}
@@ -941,239 +943,240 @@ func (s *Session) handleUIDSearch(tag, args string) {
 	s.writeLine(tag + " OK SEARCH completed")
 }
 
-func (s *Session) matchSearch(tokens []string, 
+func (s *Session) matchSearch(tokens []string,
+                              i *int,
                               uidSet map[int]struct{},
                               msg storage.MessageMeta) bool {
 
-    var fullMsg *mail.Message
-
-    var err error
-
-	for i := 0; i < len(tokens); i++ {
-
-		switch strings.ToUpper(tokens[i]) {
-
-		case "ALL":
-			continue
-
-		case "SEEN":
-			if !hasFlag(msg.Flags, "\\Seen") {
-				return false
-			}
-
-		case "UNSEEN":
-			if hasFlag(msg.Flags, "\\Seen") {
-				return false
-			}
-
-		case "DELETED":
-			if !hasFlag(msg.Flags, "\\Deleted") {
-				return false
-			}
-
-		case "FLAGGED":
-			if !hasFlag(msg.Flags, "\\Flagged") {
-				return false
-			}
-
-        case "ANSWERED":
-            if !hasFlag(msg.Flags, "\\Answered") {
-                return false
-            }
-        
-        case "UNANSWERED":
-            if hasFlag(msg.Flags, "\\Answered") {
-                return false
-            }
-        
-        case "DRAFT":
-            if !hasFlag(msg.Flags, "\\Draft") {
-                return false
-            }
-        
-        case "UNDRAFT":
-            if hasFlag(msg.Flags, "\\Draft") {
-                return false
-            }
-
-        case "UID":
-            i++
-            if i >= len(tokens) {
-                return false
-            }
-       
-            if _, ok := uidSet[int(msg.Seq)]; !ok {
-                return false
-            }
-
-        case "TEXT":
-        
-            i++
-            if i >= len(tokens) {
-                return false
-            }
-       
-            if fullMsg == nil {
-                fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
-                if err != nil {
-                    return false
-                }
-            }
-        
-            content := strings.ToLower(string(fullMsg.Raw))
-            query := strings.ToLower(tokens[i])
-        
-            if !strings.Contains(content, query) {
-                return false
-            }
-
-		case "SINCE":
-			i++
-			if i >= len(tokens) {
-				return false
-			}
-
-			date, err := time.Parse("2-Jan-2006", tokens[i])
-			if err != nil {
-				return false
-			}
-
-			msgTime := time.Unix(0, int64(msg.UID))
-
-			if msgTime.Before(date) {
-				return false
-			}
-
-		case "BEFORE":
-			i++
-			if i >= len(tokens) {
-				return false
-			}
-
-			date, err := time.Parse("2-Jan-2006", tokens[i])
-			if err != nil {
-				return false
-			}
-
-			msgTime := time.Unix(0, int64(msg.UID))
-
-			if !msgTime.Before(date) {
-				return false
-			}
-
-        case "FROM":
-            i++
-        
-            if i >= len(tokens) {
-                return false
-            }
-
-            if fullMsg == nil {
-                fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
-                if err != nil {
-                    return false
-                }
-            }
-        
-            from := strings.ToLower(fullMsg.Header("From"))
-            query := strings.ToLower(tokens[i])
-        
-            if !strings.Contains(from, query) {
-                return false
-            }
-
-        case "TO":
-            i++
-      
-            if i >= len(tokens) {
-                return false
-            }
-
-            if fullMsg == nil {
-                fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
-                if err != nil {
-                    return false
-                }
-            }
-        
-            to := strings.ToLower(fullMsg.Header("To"))
-        
-            if !strings.Contains(to, strings.ToLower(tokens[i])) {
-                return false
-            }
-
-        case "SUBJECT":
-            i++
-       
-            if i >= len(tokens) {
-                return false
-            }
-
-            if fullMsg == nil {
-                fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
-                if err != nil {
-                    return false
-                }
-            }
-        
-            subject := strings.ToLower(fullMsg.Header("Subject"))
-        
-            if !strings.Contains(subject, strings.ToLower(tokens[i])) {
-                return false
-            }
-
-        // SEARCH HEADER <header-name> <string>
-        case "HEADER":
-
-            if i + 2 >= len(tokens) {
-                return false
-            }
-
-            field := tokens[i+1]
-            query := strings.ToLower(tokens[i+2])
-
-            if fullMsg == nil {
-                fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
-                if err != nil {
-                    return false
-                }
-            }
-
-            header := strings.ToLower(fullMsg.Header(field))
-
-            if !strings.Contains(header, query) {
-                return false
-            }
-
-            i += 2
-
-        case "BODY":
-        
-        	i++
-        	if i >= len(tokens) {
-        		return false
-        	}
-        
-        	if fullMsg == nil {
-        		fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
-        		if err != nil {
-        			return false
-        		}
-        	}
-        
-        	body := strings.ToLower(string(fullMsg.Body()))
-        	query := strings.ToLower(tokens[i])
-        
-        	if !strings.Contains(body, query) {
-        		return false
-        	}
-
-		default:
+	for *i < len(tokens) {
+		if !s.evalExpr(tokens, i, uidSet, msg) {
 			return false
 		}
 	}
 
 	return true
+}
+
+func (s *Session) evalExpr(tokens []string,
+                           i *int,
+                           uidSet map[int]struct{},
+                           msg storage.MessageMeta) bool {
+
+	var fullMsg *mail.Message
+	var err error
+
+	if *i >= len(tokens) {
+		return false
+	}
+
+	switch strings.ToUpper(tokens[*i]) {
+
+	case "ALL":
+		(*i)++
+		return true
+
+	case "NOT":
+		(*i)++
+		return !s.evalExpr(tokens, i, uidSet, msg)
+
+	case "OR":
+		(*i)++
+		a := s.evalExpr(tokens, i, uidSet, msg)
+		b := s.evalExpr(tokens, i, uidSet, msg)
+		return a || b
+
+	case "SEEN":
+		(*i)++
+		return hasFlag(msg.Flags, "\\Seen")
+
+	case "UNSEEN":
+		(*i)++
+		return !hasFlag(msg.Flags, "\\Seen")
+
+	case "DELETED":
+		(*i)++
+		return hasFlag(msg.Flags, "\\Deleted")
+
+	case "FLAGGED":
+		(*i)++
+		return hasFlag(msg.Flags, "\\Flagged")
+
+	case "ANSWERED":
+		(*i)++
+		return hasFlag(msg.Flags, "\\Answered")
+
+	case "UNANSWERED":
+		(*i)++
+		return !hasFlag(msg.Flags, "\\Answered")
+
+	case "DRAFT":
+		(*i)++
+		return hasFlag(msg.Flags, "\\Draft")
+
+	case "UNDRAFT":
+		(*i)++
+		return !hasFlag(msg.Flags, "\\Draft")
+
+	case "UID":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+		ok := false
+		if _, ok = uidSet[int(msg.Seq)]; !ok {
+			return false
+		}
+		(*i)++
+		return true
+
+	case "TEXT":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		if fullMsg == nil {
+			fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
+			if err != nil {
+				return false
+			}
+		}
+
+		content := strings.ToLower(string(fullMsg.Raw))
+		query := strings.ToLower(tokens[*i])
+
+		(*i)++
+		return strings.Contains(content, query)
+
+	case "SINCE":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		date, err := time.Parse("2-Jan-2006", tokens[*i])
+		if err != nil {
+			return false
+		}
+
+		msgTime := time.Unix(0, int64(msg.UID))
+		(*i)++
+		return !msgTime.Before(date)
+
+	case "BEFORE":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		date, err := time.Parse("2-Jan-2006", tokens[*i])
+		if err != nil {
+			return false
+		}
+
+		msgTime := time.Unix(0, int64(msg.UID))
+		(*i)++
+		return msgTime.Before(date)
+
+	case "FROM":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		if fullMsg == nil {
+			fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
+			if err != nil {
+				return false
+			}
+		}
+
+		from := strings.ToLower(fullMsg.Header("From"))
+		query := strings.ToLower(tokens[*i])
+
+		(*i)++
+		return strings.Contains(from, query)
+
+	case "TO":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		if fullMsg == nil {
+			fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
+			if err != nil {
+				return false
+			}
+		}
+
+		to := strings.ToLower(fullMsg.Header("To"))
+		query := strings.ToLower(tokens[*i])
+
+		(*i)++
+		return strings.Contains(to, query)
+
+	case "SUBJECT":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		if fullMsg == nil {
+			fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
+			if err != nil {
+				return false
+			}
+		}
+
+		subject := strings.ToLower(fullMsg.Header("Subject"))
+		query := strings.ToLower(tokens[*i])
+
+		(*i)++
+		return strings.Contains(subject, query)
+
+	case "HEADER":
+		if *i+2 >= len(tokens) {
+			return false
+		}
+
+		field := tokens[*i+1]
+		query := strings.ToLower(tokens[*i+2])
+
+		if fullMsg == nil {
+			fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
+			if err != nil {
+				return false
+			}
+		}
+
+		header := strings.ToLower(fullMsg.Header(field))
+		*i += 3
+
+		return strings.Contains(header, query)
+
+	case "BODY":
+		(*i)++
+		if *i >= len(tokens) {
+			return false
+		}
+
+		if fullMsg == nil {
+			fullMsg, err = s.store.GetMessage(s.user, s.mailbox, msg.UID)
+			if err != nil {
+				return false
+			}
+		}
+
+		body := strings.ToLower(string(fullMsg.Body()))
+		query := strings.ToLower(tokens[*i])
+
+		(*i)++
+		return strings.Contains(body, query)
+
+	default:
+		return false
+	}
 }
 
 
