@@ -872,7 +872,9 @@ func (s *Session) handleSearch(tag, args string) {
 
 	for _, m := range msgs {
 
-		if s.matchSearch(tokens, uidSet, m) {
+        i := 0
+
+		if s.matchSearch(tokens, &i, uidSet, m) {
 			result = append(result, strconv.Itoa(int(m.Seq)))
 		}
 	}
