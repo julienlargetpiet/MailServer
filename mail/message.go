@@ -3,13 +3,15 @@ package mail
 
 import (
     "strings"
-    "bufio"
-    "bytes"
+
+    "mailserver/utils"
 )
 
 type Message struct {
 	Raw []byte
-    headers map[string]string
+    headers map[string][]string // dupplicated headers required by RFC 5322
+
+    bodyOffset int
 }
 
 // headers RFC-5322
@@ -19,47 +21,131 @@ type Message struct {
 // Subject: Hello Bob
 // Date: Mon, 10 Mar 2026 14:00:00 +0000
 
-func (m *Message) Headers() map[string]string {
+func (m *Message) Headers() map[string][]string {
 
 	if m.headers != nil {
 		return m.headers
 	}
 
-	headers := make(map[string]string)
+	data := m.Raw
+	n := len(data)
 
-	reader := bufio.NewReader(bytes.NewReader(m.Raw))
+	headers := make(map[string][]string, 32)
 
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
+	// ---- detect end of headers ----
+
+	end := n
+	for i := 0; i+3 < n; i++ {
+		if data[i] == '\r' &&
+			data[i+1] == '\n' &&
+			data[i+2] == '\r' &&
+			data[i+3] == '\n' {
+			end = i
 			break
 		}
+	}
 
-		line = strings.TrimRight(line, "\r\n")
+	var key string
+	lineStart := 0
 
-		// blank line = end of headers
-		if line == "" {
-			break
+	for i := 0; i <= end; i++ {
+
+		if i == end || data[i] == '\n' {
+
+			line := data[lineStart:i]
+
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+
+			lineStart = i + 1
+
+			if len(line) == 0 {
+				break
+			}
+
+			// ---- folded header ----
+
+			if line[0] == ' ' || line[0] == '\t' {
+
+				if key != "" {
+					v := headers[key]
+					if len(v) > 0 {
+						last := v[len(v)-1]
+						v[len(v)-1] = last + " " + string(utils.TrimSpace(line))
+						headers[key] = v
+					}
+				}
+
+				continue
+			}
+
+			// ---- find colon ----
+
+			colon := -1
+			for j := 0; j < len(line); j++ {
+				if line[j] == ':' {
+					colon = j
+					break
+				}
+			}
+
+			if colon <= 0 {
+				continue
+			}
+
+			k := utils.TrimSpace(line[:colon])
+			v := utils.TrimSpace(line[colon+1:])
+
+			utils.AsciiLower(k)
+
+			key = string(k)
+			headers[key] = append(headers[key], string(v))
 		}
-
-		args := strings.SplitN(line, ":", 2)
-		if len(args) != 2 {
-			continue
-		}
-
-		key := strings.ToLower(strings.TrimSpace(args[0]))
-		val := strings.TrimSpace(args[1])
-
-		headers[key] = val
 	}
 
 	m.headers = headers
-
 	return headers
 }
 
 func (m *Message) Header(name string) string {
+
+	v := m.Headers()[strings.ToLower(name)]
+
+	if len(v) == 0 {
+		return ""
+	}
+
+	return v[0]
+}
+
+func (m *Message) HeaderValues(name string) []string {
 	return m.Headers()[strings.ToLower(name)]
 }
+
+func (m *Message) Body() []byte {
+
+	if m.bodyOffset > 0 && m.bodyOffset < len(m.Raw) {
+		return m.Raw[m.bodyOffset:]
+	}
+
+	// fallback scan
+	data := m.Raw
+	n := len(data)
+
+	for i := 0; i+3 < n; i++ {
+		if data[i] == '\r' &&
+			data[i+1] == '\n' &&
+			data[i+2] == '\r' &&
+			data[i+3] == '\n' {
+
+			m.bodyOffset = i + 4
+			return data[i+4:]
+		}
+	}
+
+	return nil
+}
+
 
 
