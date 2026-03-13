@@ -1,6 +1,8 @@
 package storage
 
-import "mailserver/mail"
+import (
+    "mailserver/mail"
+)
 
 type MessageMeta struct {
     Seq uint32

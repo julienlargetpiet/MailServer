@@ -147,5 +147,37 @@ func (m *Message) Body() []byte {
 	return nil
 }
 
+func (m *Message) HeaderBytes() []byte {
 
+	data := m.Raw
+
+	for i := 0; i+3 < len(data); i++ {
+		if data[i] == '\r' &&
+		   data[i+1] == '\n' &&
+		   data[i+2] == '\r' &&
+		   data[i+3] == '\n' {
+
+			return data[:i+2]
+		}
+	}
+
+	return data
+}
+
+func (m *Message) BodyBytes() []byte {
+
+	data := m.Raw
+
+	for i := 0; i+3 < len(data); i++ {
+		if data[i] == '\r' &&
+		   data[i+1] == '\n' &&
+		   data[i+2] == '\r' &&
+		   data[i+3] == '\n' {
+
+			return data[i+4:]
+		}
+	}
+
+	return nil
+}
 

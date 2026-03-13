@@ -25,7 +25,10 @@ type fetchItem struct {
 	body  bool
 	uid   bool
 	size  bool
-    bodyPeek bool
+    bodyPeek     bool
+    bodyHeader   bool
+    bodyText     bool
+    internalDate bool
 }
 
 func hasFlag(flags []string, flag string) bool {
@@ -96,10 +99,27 @@ func parseFetchItems(s string) fetchItem {
 		case "FLAGS":
 			fi.flags = true
 
+		case "INTERNALDATE":
+			fi.internalDate = true
+
 		case "BODY[]":
 			fi.body = true
 
+		case "BODY[HEADER]":
+			fi.bodyHeader = true
+
+		case "BODY[TEXT]":
+			fi.bodyText = true
+
         case "BODY.PEEK[]":
+            fi.bodyPeek = true
+
+		case "BODY.PEEK[HEADER]":
+			fi.bodyHeader = true
+            fi.bodyPeek = true
+
+		case "BODY.PEEK[TEXT]":
+			fi.bodyText = true
             fi.bodyPeek = true
 
 		case "UID":
@@ -184,6 +204,8 @@ func parseSeqNum(v string, max int) (int, error) {
 	return n, nil
 }
 
+// client can emit FETCH transaction
+// but they can even FETCH multiple informations in one transaction
 func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
 
 	if s.state != StateSelected {
@@ -236,7 +258,11 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
 
         var msg *mail.Message
         
-        if items.body || items.bodyPeek || items.size {
+        if (items.body || 
+            items.bodyPeek || 
+            items.bodyHeader || 
+            items.bodyText ||
+            items.size) {
         
         	msg, err = s.store.GetMessage(s.user, s.mailbox, meta.UID)
         	if err != nil {
@@ -265,37 +291,68 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         
         if items.flags {
         	attrs = append(attrs, "FLAGS " + formatFlags(meta.Flags))
-        }
-        
+        } 
         if items.uid {
         	attrs = append(attrs, fmt.Sprintf("UID %d", meta.UID))
         }
+        if items.internalDate {
+            date := time.Unix(0, int64(meta.UID))
         
+            attrs = append(attrs,
+                fmt.Sprintf(`INTERNALDATE "%s"`,
+                    date.Format("02-Jan-2006 15:04:05 -0700"),
+                ),
+            )
+        }
         if items.size && msg != nil {
         	attrs = append(attrs, fmt.Sprintf("RFC822.SIZE %d", len(msg.Raw)))
         }
 
-        prefix := fmt.Sprintf("* %d FETCH (", n)
+        var payload [][]byte
+        var section []string
 
+        if items.body || items.bodyPeek {
+        	payload = append(payload, msg.Raw)
+            section = append(section, "BODY[]")
+        }
+        if items.bodyHeader {
+        	payload = append(payload, msg.HeaderBytes())
+            section = append(section, "BODY[HEADER]")
+        } 
+        if items.bodyText {
+        	payload = append(payload, msg.BodyBytes())
+            section = append(section, "BODY[TEXT]")
+        } 
+
+        prefix := fmt.Sprintf("* %d FETCH (", n)
+        
         if len(attrs) > 0 {
         	prefix += strings.Join(attrs, " ") + " "
         }
         
-        if (items.body || items.bodyPeek) && msg != nil {
+        if len(payload) > 0 {
         
-        	size := len(msg.Raw)
+        	for i := range payload {
         
-        	s.writeLine(fmt.Sprintf("%sBODY[] {%d}", prefix, size))
+        		size := len(payload[i])
         
-        	s.writer.Write(msg.Raw)
-        	s.writer.Write([]byte("\r\n"))
+        		if i == 0 {
+        			s.writeLine(fmt.Sprintf("%s%s {%d}", prefix, section[i], size))
+        		} else {
+        			s.writeLine(fmt.Sprintf(" %s {%d}", section[i], size))
+        		}
+        
+        		s.writer.Write(payload[i])
+        		s.writer.Write([]byte("\r\n"))
+        	}
+        
         	s.writer.Flush()
-        
         	s.writeLine(")")
         
         } else {
         
         	s.writeLine(strings.TrimRight(prefix, " ") + ")")
+        
         }
 
 	}
