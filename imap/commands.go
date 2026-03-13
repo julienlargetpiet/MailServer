@@ -363,6 +363,15 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
                 ),
             )
         }
+        if msg != nil && len(items.headerFieldsNot) > 0 {
+            payload = append(payload, msg.HeaderFieldsNot(items.headerFields))
+        
+            section = append(section,
+                fmt.Sprintf("BODY[HEADER.FIELDS.NOT (%s)]",
+                    strings.Join(items.headerFields, " "),
+                ),
+            )
+        }
 
         prefix := fmt.Sprintf("* %d FETCH (", n)
         

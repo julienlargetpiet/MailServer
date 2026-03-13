@@ -211,6 +211,7 @@ func (m *Message) HeaderFields(names []string) []byte {
 	var out bytes.Buffer
 
 	lineStart := 0
+	include := false
 
 	for i := 0; i <= end; i++ {
 
@@ -228,9 +229,21 @@ func (m *Message) HeaderFields(names []string) []byte {
 				break
 			}
 
+			// folded line
+			if line[0] == ' ' || line[0] == '\t' {
+
+				if include {
+					out.Write(line)
+					out.WriteString("\r\n")
+				}
+
+				continue
+			}
+
 			colon := bytes.IndexByte(line, ':')
 
 			if colon <= 0 {
+				include = false
 				continue
 			}
 
@@ -238,6 +251,90 @@ func (m *Message) HeaderFields(names []string) []byte {
 
 			if _, ok := want[name]; ok {
 
+				include = true
+				out.Write(line)
+				out.WriteString("\r\n")
+
+			} else {
+
+				include = false
+			}
+		}
+	}
+
+	out.WriteString("\r\n")
+
+	return out.Bytes()
+}
+
+func (m *Message) HeaderFieldsNot(names []string) []byte {
+
+	exclude := map[string]struct{}{}
+
+	for _, n := range names {
+		exclude[strings.ToLower(n)] = struct{}{}
+	}
+
+	data := m.Raw
+	n := len(data)
+
+	end := n
+
+	for i := 0; i+3 < n; i++ {
+		if data[i] == '\r' &&
+			data[i+1] == '\n' &&
+			data[i+2] == '\r' &&
+			data[i+3] == '\n' {
+
+			end = i
+			break
+		}
+	}
+
+	var out bytes.Buffer
+
+	lineStart := 0
+	include := false
+
+	for i := 0; i <= end; i++ {
+
+		if i == end || data[i] == '\n' {
+
+			line := data[lineStart:i]
+
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+
+			lineStart = i + 1
+
+			if len(line) == 0 {
+				break
+			}
+
+			// folded line
+			if line[0] == ' ' || line[0] == '\t' {
+				if include {
+					out.Write(line)
+					out.WriteString("\r\n")
+				}
+				continue
+			}
+
+			colon := bytes.IndexByte(line, ':')
+
+			if colon <= 0 {
+				include = false
+				continue
+			}
+
+			name := strings.ToLower(string(bytes.TrimSpace(line[:colon])))
+
+			_, blocked := exclude[name]
+
+			include = !blocked
+
+			if include {
 				out.Write(line)
 				out.WriteString("\r\n")
 			}
@@ -248,6 +345,4 @@ func (m *Message) HeaderFields(names []string) []byte {
 
 	return out.Bytes()
 }
-
-
 
