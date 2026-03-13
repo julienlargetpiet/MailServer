@@ -10,6 +10,7 @@ import (
 
     "mailserver/storage"
     "mailserver/mail"
+    "mailserver/utils"
 )
 
 type fetchMode int
@@ -828,7 +829,7 @@ func (s *Session) handleSearch(tag, args string) {
 		return
 	}
 
-	tokens := strings.Fields(args)
+	tokens := utils.ParseSearchTokens(args)
 
     if len(tokens) >= 2 && strings.ToUpper(tokens[0]) == "CHARSET" {
     
@@ -890,7 +891,7 @@ func (s *Session) handleUIDSearch(tag, args string) {
 		return
 	}
 
-	tokens := strings.Fields(args)
+	tokens := utils.ParseSearchTokens(args)
 
     if len(tokens) >= 2 && strings.ToUpper(tokens[0]) == "CHARSET" {
     
@@ -950,7 +951,7 @@ func (s *Session) matchSearch(tokens []string,
                               uidSet map[int]struct{},
                               msg storage.MessageMeta) bool {
 
-	for *i < len(tokens) {
+	for *i < len(tokens) && tokens[*i] != ")" {
 		if !s.evalExpr(tokens, i, uidSet, msg) {
 			return false
 		}
@@ -972,6 +973,20 @@ func (s *Session) evalExpr(tokens []string,
 	}
 
 	switch strings.ToUpper(tokens[*i]) {
+
+    case "(":
+    
+    		(*i)++
+    
+    		ok := s.matchSearch(tokens, i, uidSet, msg)
+    
+    		if *i >= len(tokens) || tokens[*i] != ")" {
+    			return false
+    		}
+    
+    		(*i)++
+    
+    		return ok
 
 	case "ALL":
 		(*i)++

@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
     "sync"
+    "io"
+    "strconv"
 
 	"mailserver/storage"
 )
@@ -57,14 +59,20 @@ func (s *Session) Serve() {
         // read bytes from the TCP connection (kernel socket buffer) into the bufio.Reader buffer
         // until a newline is encountered
 
-		line, err := s.reader.ReadString('\n')
-		if err != nil {
-			return
-		}
+        line, err := s.reader.ReadString('\n')
+        if err != nil {
+        	return
+        }
+        
+        line = strings.TrimRight(line, "\r\n")
 
-		line = strings.TrimRight(line, "\r\n")
-
-		tag, cmd, args := parseCommand(line)
+        // RFC 3501 - base literals and RFC 2088 for non synchronized literals
+        line, err = s.ResolveLiterals(line)
+        if err != nil {
+        	return
+        }
+        
+        tag, cmd, args := parseCommand(line)
 
 		switch cmd {
 
@@ -126,6 +134,70 @@ func (s *Session) writeLine(line string) {
 	s.writer.Flush() // writes through the TCP connection
 }
 
+
+// technically literals are always at the end of the line
+// but i can have multiple literals like:
+// C: A1 LOGIN {4}\r\n
+// S: + go ahead
+// C: bob\r\n
+// C: {8}\r\n
+// S: + go ahead
+// C: password\r\n
+func (s *Session) ResolveLiterals(line string) (string, error) {
+
+	for {
+
+		if !strings.HasSuffix(line, "}") {
+			return line, nil
+		}
+
+		open := strings.LastIndex(line, "{")
+		if open == -1 || open > len(line)-3 {
+			return line, nil
+		}
+
+		sizeStr := line[open+1 : len(line) - 1]
+
+		sync := true
+
+		if strings.HasSuffix(sizeStr, "+") { // RFC 2088
+			sync = false
+			sizeStr = sizeStr[:len(sizeStr)-1]
+		}
+        
+        if strings.HasSuffix(sizeStr, "-") {
+            sync = false
+            sizeStr = sizeStr[:len(sizeStr)-1]
+        }
+
+		size, err := strconv.Atoi(sizeStr)
+		if err != nil {
+			return line, nil
+		}
+
+        // optional response when too heavy
+        //if size > 500000 {
+		//	s.writeLine("NO [TOOBIG]")
+        //    return
+        //}
+
+		if sync {
+			s.writeLine("+ go ahead")
+		}
+
+		buf := make([]byte, size)
+
+		_, err = io.ReadFull(s.reader, buf)
+		if err != nil {
+			return "", err
+		}
+
+		// consume CRLF after literal
+		s.reader.ReadString('\n')
+
+		line = line[:open] + string(buf)
+	}
+}
 
 
 

@@ -31,3 +31,51 @@ func AsciiLower(b []byte) {
 		}
 	}
 }
+
+func ParseSearchTokens(s string) []string {
+
+	var tokens []string
+	i := 0
+	n := len(s)
+
+	for i < n {
+
+		for i < n && s[i] == ' ' {
+			i++
+		}
+
+		if i >= n {
+			break
+		}
+
+		if s[i] == '"' {
+
+			i++
+			start := i
+
+			for i < n && s[i] != '"' {
+				i++
+			}
+
+			tokens = append(tokens, s[start:i])
+
+			if i < n {
+				i++
+			}
+
+		} else {
+
+			start := i
+
+			for i < n && s[i] != ' ' {
+				i++
+			}
+
+			tokens = append(tokens, s[start:i])
+		}
+	}
+
+	return tokens
+}
+
+
