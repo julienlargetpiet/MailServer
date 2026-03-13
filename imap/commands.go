@@ -25,6 +25,7 @@ type fetchItem struct {
 	body  bool
 	uid   bool
 	size  bool
+    bodyPeek bool
 }
 
 func hasFlag(flags []string, flag string) bool {
@@ -97,6 +98,9 @@ func parseFetchItems(s string) fetchItem {
 
 		case "BODY[]":
 			fi.body = true
+
+        case "BODY.PEEK[]":
+            fi.bodyPeek = true
 
 		case "UID":
 			fi.uid = true
@@ -232,12 +236,29 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
 
         var msg *mail.Message
         
-        if items.body || items.size {
+        if items.body || items.bodyPeek || items.size {
         
         	msg, err = s.store.GetMessage(s.user, s.mailbox, meta.UID)
         	if err != nil {
         		continue
         	}
+        }
+
+        if items.body && !hasFlag(meta.Flags, "\\Seen"){
+           err := s.store.UpdateFlags(
+	        	s.user,
+	        	s.mailbox,
+	        	meta.UID,
+	        	storage.FlagAdd,
+	        	[]string{"\\Seen"},
+	       )
+
+	        if err == nil {
+	        	meta.Flags = append(meta.Flags, "\\Seen")
+                line := fmt.Sprintf("* %d FETCH (FLAGS %s)", n, formatFlags(meta.Flags))
+		        s.writeLine(line)
+	            s.hub.BroadcastExcept(s.mailbox, s, line)
+	        } 
         }
 
         var attrs []string
@@ -255,12 +276,12 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         }
 
         prefix := fmt.Sprintf("* %d FETCH (", n)
-        
+
         if len(attrs) > 0 {
         	prefix += strings.Join(attrs, " ") + " "
         }
         
-        if items.body && msg != nil {
+        if (items.body || items.bodyPeek) && msg != nil {
         
         	size := len(msg.Raw)
         
