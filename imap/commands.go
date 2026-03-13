@@ -122,6 +122,15 @@ func parseFetchItems(s string) fetchItem {
 			fi.bodyText = true
             fi.bodyPeek = true
 
+		case "RFC822":
+			fi.body = true
+
+		case "RFC.HEADER":
+			fi.bodyHeader = true
+
+		case "RFC.TEXT":
+			fi.bodyText = true
+
 		case "UID":
 			fi.uid = true
 
