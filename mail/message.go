@@ -3,6 +3,7 @@ package mail
 
 import (
     "strings"
+    "bytes"
 
     "mailserver/utils"
 )
@@ -180,4 +181,73 @@ func (m *Message) BodyBytes() []byte {
 
 	return nil
 }
+
+// RFC 3501: header must be returned 
+// in the same order they appear in the message header
+func (m *Message) HeaderFields(names []string) []byte {
+
+	want := make(map[string]struct{}, len(names))
+
+	for _, n := range names {
+		want[strings.ToLower(n)] = struct{}{}
+	}
+
+	data := m.Raw
+	n := len(data)
+
+	end := n
+
+	for i := 0; i+3 < n; i++ {
+		if data[i] == '\r' &&
+			data[i+1] == '\n' &&
+			data[i+2] == '\r' &&
+			data[i+3] == '\n' {
+
+			end = i
+			break
+		}
+	}
+
+	var out bytes.Buffer
+
+	lineStart := 0
+
+	for i := 0; i <= end; i++ {
+
+		if i == end || data[i] == '\n' {
+
+			line := data[lineStart:i]
+
+			if len(line) > 0 && line[len(line)-1] == '\r' {
+				line = line[:len(line)-1]
+			}
+
+			lineStart = i + 1
+
+			if len(line) == 0 {
+				break
+			}
+
+			colon := bytes.IndexByte(line, ':')
+
+			if colon <= 0 {
+				continue
+			}
+
+			name := strings.ToLower(string(bytes.TrimSpace(line[:colon])))
+
+			if _, ok := want[name]; ok {
+
+				out.Write(line)
+				out.WriteString("\r\n")
+			}
+		}
+	}
+
+	out.WriteString("\r\n")
+
+	return out.Bytes()
+}
+
+
 

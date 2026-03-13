@@ -1,5 +1,9 @@
 package utils
 
+import (
+    "strings"
+)
+
 func TrimSpace(b []byte) []byte {
 	start := 0
 	end := len(b)
@@ -77,5 +81,54 @@ func ParseSearchTokens(s string) []string {
 
 	return tokens
 }
+
+func TokenizeFetchItems(s string) []string {
+
+	s = strings.TrimSpace(s)
+
+	// remove outer parentheses if present
+	if len(s) > 0 && s[0] == '(' && s[len(s)-1] == ')' {
+		s = s[1:len(s)-1]
+	}
+
+	var tokens []string
+	start := 0
+
+	bracket := 0
+	paren := 0
+
+	for i := 0; i < len(s); i++ {
+
+		switch s[i] {
+
+		case '[':
+			bracket++
+
+		case ']':
+			bracket--
+
+		case '(':
+			paren++
+
+		case ')':
+			paren--
+
+		case ' ':
+			if bracket == 0 && paren == 0 {
+				if start < i {
+					tokens = append(tokens, s[start:i])
+				}
+				start = i + 1
+			}
+		}
+	}
+
+	if start < len(s) {
+		tokens = append(tokens, s[start:])
+	}
+
+	return tokens
+}
+
 
 

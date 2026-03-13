@@ -29,6 +29,22 @@ type fetchItem struct {
     bodyHeader   bool
     bodyText     bool
     internalDate bool
+    headerFields    []string
+    headerFieldsNot []string
+}
+
+func parseHeaderFields(tok string, fi *fetchItem) {
+
+	start := strings.Index(tok, "(")
+	end := strings.Index(tok, ")")
+
+	if start == -1 || end == -1 || end <= start {
+		return
+	}
+
+	fields := strings.Fields(tok[start+1 : end])
+
+	fi.headerFields = fields
 }
 
 func hasFlag(flags []string, flag string) bool {
@@ -86,56 +102,62 @@ func parseStoreArgs(args string) (string,
 
 func parseFetchItems(s string) fetchItem {
 
-	s = strings.ToUpper(strings.Trim(s, "()"))
-
-	parts := strings.Fields(s)
+    tokens := utils.TokenizeFetchItems(s)
 
 	var fi fetchItem
 
-	for _, p := range parts {
+	for _, p := range tokens {
 
-		switch p {
+		switch {
 
-		case "FLAGS":
+		case p == "FLAGS":
 			fi.flags = true
 
-		case "INTERNALDATE":
+		case p == "INTERNALDATE":
 			fi.internalDate = true
 
-		case "BODY[]":
+		case p == "BODY[]":
 			fi.body = true
 
-		case "BODY[HEADER]":
+		case p == "BODY[HEADER]":
 			fi.bodyHeader = true
 
-		case "BODY[TEXT]":
+		case p == "BODY[TEXT]":
 			fi.bodyText = true
 
-        case "BODY.PEEK[]":
+        case p == "BODY.PEEK[]":
             fi.bodyPeek = true
 
-		case "BODY.PEEK[HEADER]":
+		case p == "BODY.PEEK[HEADER]":
 			fi.bodyHeader = true
             fi.bodyPeek = true
 
-		case "BODY.PEEK[TEXT]":
+		case p == "BODY.PEEK[TEXT]":
 			fi.bodyText = true
             fi.bodyPeek = true
 
-		case "RFC822":
+		case p == "RFC822":
 			fi.body = true
 
-		case "RFC.HEADER":
+		case p == "RFC822.HEADER":
 			fi.bodyHeader = true
 
-		case "RFC.TEXT":
+		case p == "RFC822.TEXT":
 			fi.bodyText = true
 
-		case "UID":
+		case p == "UID":
 			fi.uid = true
 
-		case "RFC822.SIZE":
+		case p == "RFC822.SIZE":
 			fi.size = true
+
+        case strings.HasPrefix(p, "BODY[HEADER.FIELDS"):
+			parseHeaderFields(p, &fi)
+
+		case strings.HasPrefix(p, "BODY.PEEK[HEADER.FIELDS"):
+			fi.bodyPeek = true
+			parseHeaderFields(p, &fi)
+
 		}
 	}
 
@@ -332,6 +354,15 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         	payload = append(payload, msg.BodyBytes())
             section = append(section, "BODY[TEXT]")
         } 
+        if msg != nil && len(items.headerFields) > 0 {
+            payload = append(payload, msg.HeaderFields(items.headerFields))
+        
+            section = append(section,
+                fmt.Sprintf("BODY[HEADER.FIELDS (%s)]",
+                    strings.Join(items.headerFields, " "),
+                ),
+            )
+        }
 
         prefix := fmt.Sprintf("* %d FETCH (", n)
         
