@@ -364,7 +364,7 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
             )
         }
         if msg != nil && len(items.headerFieldsNot) > 0 {
-            payload = append(payload, msg.HeaderFieldsNot(items.headerFields))
+            payload = append(payload, msg.HeaderFieldsNot(items.headerFieldsNot))
         
             section = append(section,
                 fmt.Sprintf("BODY[HEADER.FIELDS.NOT (%s)]",
