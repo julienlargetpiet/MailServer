@@ -130,5 +130,3 @@ func TokenizeFetchItems(s string) []string {
 	return tokens
 }
 
-
-

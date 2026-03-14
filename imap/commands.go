@@ -7,6 +7,7 @@ import (
     "sort"
     "os"
     "time"
+    "bytes"
 
     "mailserver/storage"
     "mailserver/mail"
@@ -20,16 +21,27 @@ const (
 	fetchByUID
 )
 
+type MimePart struct {
+    Type        string // text, image...
+    Subtype     string // plain, png...
+    Params      map[string]string // charset utf-8
+    Encoding    string // 7bits, base64
+    Size        int // number of "characterr" / "elements" for the chosen encoding format
+    Lines       int // number of lines
+    Children    []*MimePart // so it is recursive
+}
+
 type fetchItem struct {
 	flags bool
 	body  bool
 	uid   bool
 	size  bool
-    bodyPeek     bool
-    bodyHeader   bool
-    bodyText     bool
-    internalDate bool
-    enveloppe    bool
+    bodyPeek      bool
+    bodyHeader    bool
+    bodyText      bool
+    internalDate  bool
+    enveloppe     bool
+    bodyStructure bool
     headerFields    []string
     headerFieldsNot []string
 }
@@ -127,6 +139,9 @@ func parseFetchItems(s string) fetchItem {
 
 		case p == "FLAGS":
 			fi.flags = true
+
+        case p == "BODYSTRUCTURE":
+            fi.bodyStructure = true
 
 		case p == "INTERNALDATE":
 			fi.internalDate = true
@@ -344,15 +359,13 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         }
 
         var attrs []string
-        
+       
+        // attrs convention order - not RFC reqired but nice convention
         if items.flags {
         	attrs = append(attrs, "FLAGS " + formatFlags(meta.Flags))
         } 
         if items.uid {
         	attrs = append(attrs, fmt.Sprintf("UID %d", meta.UID))
-        }
-        if items.enveloppe { // ENVELOPE is in fact in the same position than FLAGS UIDS, INTERNALDATE...
-            attrs = append(attrs, "ENVELOPE" + msg.Envelope())
         }
         if items.internalDate {
             date := time.Unix(0, int64(meta.UID))
@@ -365,6 +378,16 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         }
         if items.size && msg != nil {
         	attrs = append(attrs, fmt.Sprintf("RFC822.SIZE %d", len(msg.Raw)))
+        }
+        if items.enveloppe { // ENVELOPE is in fact in the same position than FLAGS UIDS, INTERNALDATE...
+            attrs = append(attrs, "ENVELOPE " + msg.Envelope())
+        }
+        if items.bodyStructure && msg != nil {
+            part := buildPart(msg.Raw)
+
+            attrs = append(attrs,
+                "BODYSTRUCTURE " + renderPart(part),
+            )
         }
 
         var payload [][]byte
@@ -396,7 +419,7 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         
             section = append(section,
                 fmt.Sprintf("BODY[HEADER.FIELDS.NOT (%s)]",
-                    strings.Join(items.headerFields, " "),
+                    strings.Join(items.headerFieldsNot, " "),
                 ),
             )
         }
@@ -1349,6 +1372,150 @@ func (s *Session) evalExpr(tokens []string,
 	default:
 		return false
 	}
+}
+
+func buildPart(raw []byte) *MimePart {
+
+    msg := &mail.Message{Raw: raw}
+
+    ct := msg.Header("Content-Type")
+
+    encoding := strings.ToUpper(msg.Header("Content-Transfer-Encoding"))
+    if encoding == "" {
+        encoding = "7BIT"
+    }
+
+    var typ, sub string
+    var params map[string]string
+
+    if ct == "" {
+        typ = "TEXT"
+        sub = "PLAIN"
+        params = map[string]string{
+            "CHARSET": "US-ASCII",
+        }
+    } else {
+        typ, sub, params = parseContentType(ct)
+    }
+
+    body := msg.BodyBytes()
+
+    part := &MimePart{
+        Type: typ,
+        Subtype: sub,
+        Params: params,
+        Encoding: encoding,
+        Size: len(body),
+        Lines: bytes.Count(body, []byte("\n")),
+    }
+
+    if typ == "MULTIPART" {
+
+        boundary, ok := params["BOUNDARY"]
+        if !ok {
+            return part
+        }
+
+        chunks := splitMultipart(body, boundary)
+
+        for _, c := range chunks {
+            part.Children = append(part.Children, buildPart(c))
+        }
+    }
+
+    return part
+}
+
+func parseContentType(h string) (typ, subtype string, params map[string]string) {
+
+    params = map[string]string{}
+
+    parts := strings.Split(h, ";")
+
+    main := strings.TrimSpace(parts[0])
+
+    if i := strings.Index(main, "/"); i != -1 {
+        typ = strings.ToUpper(main[:i])
+        subtype = strings.ToUpper(main[i+1:])
+    }
+
+    for _, p := range parts[1:] {
+
+        kv := strings.SplitN(p, "=", 2)
+
+        if len(kv) != 2 {
+            continue
+        }
+
+        k := strings.ToUpper(strings.TrimSpace(kv[0]))
+        v := strings.Trim(strings.TrimSpace(kv[1]), `"`)
+
+        params[k] = v
+    }
+
+    return
+}
+
+func splitMultipart(body []byte, boundary string) [][]byte {
+
+    marker := []byte("--" + boundary)
+
+    parts := bytes.Split(body, marker)
+
+    var out [][]byte
+
+    for _, p := range parts {
+
+        p = bytes.Trim(p, "\r\n ")
+
+        if len(p) == 0 || bytes.Equal(p, []byte("--")) {
+            continue
+        }
+
+        if bytes.HasSuffix(p, []byte("--")) {
+            p = p[:len(p)-2]
+        }
+
+        out = append(out, bytes.TrimSpace(p))
+    }
+
+    return out
+}
+
+func renderLeaf(p *MimePart) string {
+
+    return fmt.Sprintf(
+        `("%s" "%s" NIL NIL NIL "%s" %d %d)`,
+        p.Type,
+        p.Subtype,
+        p.Encoding,
+        p.Size,
+        p.Lines,
+    )
+}
+
+func renderPart(p *MimePart) string {
+
+    if p.Type == "MULTIPART" {
+        return RenderMultipart(p)
+    }
+
+    return renderLeaf(p)
+}
+
+func RenderMultipart(p *MimePart) string {
+
+    var parts []string
+
+    for _, c := range p.Children {
+        parts = append(parts, renderPart(c))
+    }
+
+    return fmt.Sprintf(
+        "(%s \"%s\")",
+        strings.Join(parts, " "),
+        p.Subtype,
+    )
 }
 
 
