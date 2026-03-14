@@ -4,6 +4,9 @@ package mail
 import (
     "strings"
     "bytes"
+    "fmt"
+    "time"
+    "net/mail"
 
     "mailserver/utils"
 )
@@ -345,4 +348,119 @@ func (m *Message) HeaderFieldsNot(names []string) []byte {
 
 	return out.Bytes()
 }
+
+func (m *Message) Envelope() string {
+
+    date :=    envelopeDate(m.Header("Date")) // RFC822 Date format
+    subject := imapString(m.Header("Subject"))
+
+    from :=    formatAddressList(m.Header("From"))
+    sender :=  formatAddressList(m.Header("Sender"))
+    if sender == "NIL" { // fallback
+        sender = from
+    }
+    replyTo := formatAddressList(m.Header("Reply-To"))
+    if replyTo == "NIL" { // fallback
+        replyTo = from
+    }
+    to :=      formatAddressList(m.Header("To"))
+    cc :=      formatAddressList(m.Header("Cc"))
+    bcc :=     formatAddressList(m.Header("Bcc"))
+
+    inReply := imapString(m.Header("In-Reply-To"))
+    msgid :=   imapString(m.Header("Message-ID"))
+
+    return fmt.Sprintf("(%s %s %s %s %s %s %s %s %s %s)",
+        date,
+        subject,
+        from,
+        sender,
+        replyTo,
+        to,
+        cc,
+        bcc,
+        inReply,
+        msgid,
+    )
+}
+
+func envelopeDate(h string) string {
+
+	if h == "" {
+		return "NIL"
+	}
+
+	layouts := []string{
+		time.RFC822,
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC850,
+	}
+
+	var t time.Time
+	var err error
+
+	for _, l := range layouts {
+		t, err = time.Parse(l, h)
+		if err == nil {
+			return `"` + t.Format("02-Jan-2006 15:04:05 -0700") + `"`
+		}
+	}
+
+	// fallback: return raw header
+	return imapString(h)
+}
+
+func imapString(s string) string {
+    if s == "" {
+        return "NIL"
+    }
+    return `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
+}
+
+func formatAddressList(h string) string {
+
+    if h == "" {
+        return "NIL"
+    }
+
+    addrs, err := mail.ParseAddressList(h)
+    if err != nil || len(addrs) == 0 {
+        return "NIL"
+    }
+
+    // produces a list of a dict like:
+    // [
+    //   {Name: "Alice Smith", Address: "alice@example.com"},
+    //   {Name: "Bob", Address: "bob@test.com"}
+    // ]
+
+    var parts []string
+
+    for _, a := range addrs {
+
+        name := imapString(a.Name)
+
+        local, domain, _ := strings.Cut(a.Address, "@")
+
+        parts = append(parts,
+            fmt.Sprintf("(%s NIL %s %s)", // name, route, mailbox, host, route is NIL because obsolete fossil lol
+                name,
+                imapAddrPart(local),
+                imapAddrPart(domain),
+            ),
+        )
+    }
+
+    return "(" + strings.Join(parts, " ") + ")"
+}
+
+func imapAddrPart(s string) string {
+	if s == "" {
+		return "NIL"
+	}
+	return `"` + s + `"`
+}
+
 

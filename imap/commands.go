@@ -29,6 +29,7 @@ type fetchItem struct {
     bodyHeader   bool
     bodyText     bool
     internalDate bool
+    enveloppe    bool
     headerFields    []string
     headerFieldsNot []string
 }
@@ -45,6 +46,20 @@ func parseHeaderFields(tok string, fi *fetchItem) {
 	fields := strings.Fields(tok[start+1 : end])
 
 	fi.headerFields = fields
+}
+
+func parseHeaderFieldsNot(tok string, fi *fetchItem) {
+
+	start := strings.Index(tok, "(")
+	end := strings.Index(tok, ")")
+
+	if start == -1 || end == -1 || end <= start {
+		return
+	}
+
+	fields := strings.Fields(tok[start+1 : end])
+
+	fi.headerFieldsNot = fields
 }
 
 func hasFlag(flags []string, flag string) bool {
@@ -151,12 +166,22 @@ func parseFetchItems(s string) fetchItem {
 		case p == "RFC822.SIZE":
 			fi.size = true
 
+		case p == "ENVELOPE":
+			fi.enveloppe = true
+
         case strings.HasPrefix(p, "BODY[HEADER.FIELDS"):
 			parseHeaderFields(p, &fi)
 
 		case strings.HasPrefix(p, "BODY.PEEK[HEADER.FIELDS"):
 			fi.bodyPeek = true
 			parseHeaderFields(p, &fi)
+
+        case strings.HasPrefix(p, "BODY[HEADER.FIELDS.NOT"):
+			parseHeaderFieldsNot(p, &fi)
+
+		case strings.HasPrefix(p, "BODY.PEEK[HEADER.FIELDS.NOT"):
+			fi.bodyPeek = true
+			parseHeaderFieldsNot(p, &fi)
 
 		}
 	}
@@ -325,6 +350,9 @@ func (s *Session) fetchMessages(tag, seqset, item string, mode fetchMode) {
         } 
         if items.uid {
         	attrs = append(attrs, fmt.Sprintf("UID %d", meta.UID))
+        }
+        if items.enveloppe { // ENVELOPE is in fact in the same position than FLAGS UIDS, INTERNALDATE...
+            attrs = append(attrs, "ENVELOPE" + msg.Envelope())
         }
         if items.internalDate {
             date := time.Unix(0, int64(meta.UID))
